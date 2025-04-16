@@ -1,0 +1,67 @@
+name: Build TensorFlow Serving for Jetson (aarch64)
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    env:
+      CUDA_VERSION: "10.2"
+      CUDNN_VERSION: "8"
+      USE_BAZEL_VERSION: "3.1.0"
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/cross-linux-aarch64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y wget g++ unzip zip python3 python3-pip \
+            software-properties-common git curl build-essential \
+            pkg-config openjdk-11-jdk python-is-python3 cuda-cross-aarch64 \
+            python3-distutils
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install numpy wheel six setuptools keras_preprocessing gast grpcio absl-py wrapt opt_einsum
+
+      - name: Install Bazel
+        uses: bazel-contrib/setup-bazel@0.14.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+
+      - name: Set Python path
+        run: echo "PYTHON_BIN_PATH=$(which python3)" >> $GITHUB_ENV
+
+      - name: Build TensorFlow Serving (cross-compiled)
+        run: |
+          bazel build \
+            --config=cuda \
+            --cpu=aarch64 \
+            --host_cpu=x86_64 \
+            --define=no_nccl_support=true \
+            --define=maxrregcount=80 \
+            --action_env=PYTHON_BIN_PATH="$(which python3)" \
+            --action_env=TF_CUDA_VERSION="$CUDA_VERSION" \
+            --action_env=TF_CUDNN_VERSION="$CUDNN_VERSION" \
+            --action_env=TF_CUDA_COMPUTE_CAPABILITIES="5.3" \
+            //tensorflow_serving/model_servers:tensorflow_model_server 
+      - name: Upload binary to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: bazel-bin/tensorflow_serving/model_servers/tensorflow_model_server
+
