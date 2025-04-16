@@ -1,0 +1,112 @@
+name: Build TensorFlow Serving for Jetson (aarch64)
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04-arm
+
+    env:
+      CUDA_VERSION: "10.2"
+      CUDNN_VERSION: "8"
+      USE_BAZEL_VERSION: "3.4.1"
+
+    steps:
+      - name: Install dependencies for .deb packages
+        run: |
+          sudo apt update
+          sudo apt install -y wget gnupg software-properties-common libgmp-dev libmpfr-dev libmpc-dev zlib1g-dev
+
+      - name: Download GCC-8 and related .deb packages
+        run: |
+          mkdir gcc8-debs && cd gcc8-debs
+
+          wget http://ports.ubuntu.com/ubuntu-ports/pool/universe/g/gcc-8/gcc-8-base_8.4.0-3ubuntu2_arm64.deb
+          wget http://ports.ubuntu.com/ubuntu-ports/pool/main/i/isl/libisl22_0.22.1-1_arm64.deb
+          wget http://ports.ubuntu.com/ubuntu-ports/pool/universe/g/gcc-8/libgcc-8-dev_8.4.0-3ubuntu2_arm64.deb
+          wget http://ports.ubuntu.com/ubuntu-ports/pool/universe/g/gcc-8/cpp-8_8.4.0-3ubuntu2_arm64.deb
+          wget http://ports.ubuntu.com/ubuntu-ports/pool/universe/g/gcc-8/gcc-8_8.4.0-3ubuntu2_arm64.deb
+          wget http://ports.ubuntu.com/ubuntu-ports/pool/universe/g/gcc-8/libstdc++-8-dev_8.4.0-3ubuntu2_arm64.deb
+          wget http://ports.ubuntu.com/ubuntu-ports/pool/universe/g/gcc-8/g++-8_8.4.0-3ubuntu2_arm64.deb
+
+      - name: Install GCC-8 from .deb packages
+        run: |
+          cd gcc8-debs
+          sudo dpkg -i *.deb || sudo apt -f install -y
+
+      - name: Set GCC-8 and G++-8 as default
+        run: |
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-8 80
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-8 80
+
+      - name: Show compiler versions
+        run: |
+          echo "GCC version:"
+          gcc --version
+          echo "G++ version:"
+          g++ --version
+
+      - name: Checkout source
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Add Jetson apt repos and keys
+        run: |
+          wget -qO - https://repo.download.nvidia.com/jetson/jetson-ota-public.asc | sudo tee /etc/apt/trusted.gpg.d/jetson.asc
+          echo "deb https://repo.download.nvidia.com/jetson/common r32.7 main" | sudo tee /etc/apt/sources.list.d/jetson-common.list
+          echo "deb https://repo.download.nvidia.com/jetson/t210 r32.7 main" | sudo tee /etc/apt/sources.list.d/jetson-t210.list
+          sudo apt-get update
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get install -y wget g++ unzip zip python3 python3-pip \
+            build-essential curl pkg-config openjdk-11-jdk python-is-python3 \
+            python3-distutils cuda-toolkit-10-2 libcudnn8 libcudnn8-dev libnvinfer8 libnvinfer-dev libnvinfer-plugin8 libnvinfer-plugin-dev
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-8 60
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-8 60
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install numpy wheel six setuptools keras_preprocessing gast grpcio absl-py wrapt opt_einsum
+
+      - name: Install Bazel
+        uses: bazel-contrib/setup-bazel@0.14.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+          bazel-version: ${{ env.USE_BAZEL_VERSION }}
+
+      - name: Set Python path
+        run: echo "PYTHON_BIN_PATH=$(which python3)" >> $GITHUB_ENV
+
+      - name: Build TensorFlow Serving (native ARM64)
+        run: |
+          export TF_NEED_CUDA=1
+          export TF_CUDA_VERSION=$CUDA_VERSION
+          export TF_CUDNN_VERSION=$CUDNN_VERSION
+          export TF_CUDA_COMPUTE_CAPABILITIES="5.3"
+          export CUDA_HOME=/usr/local/cuda
+
+          bazel build \
+            --config=cuda \
+            --define=no_nccl_support=true \
+            --define=maxrregcount=80 \
+            --action_env=PYTHON_BIN_PATH="$(which python3)" \
+            --action_env=TF_CUDA_VERSION="$TF_CUDA_VERSION" \
+            --action_env=TF_CUDNN_VERSION="$TF_CUDNN_VERSION" \
+            --action_env=TF_CUDA_COMPUTE_CAPABILITIES="$TF_CUDA_COMPUTE_CAPABILITIES" \
+            //tensorflow_serving/model_servers:tensorflow_model_server
+
+      - name: Upload binary to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: bazel-bin/tensorflow_serving/model_servers/tensorflow_model_server
+
