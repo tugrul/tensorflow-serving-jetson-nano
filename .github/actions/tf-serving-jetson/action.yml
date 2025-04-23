@@ -1,0 +1,7 @@
+
+name: "Build TF Serving for Jetson"
+description: "Build TensorFlow Serving for Jetson Nano (aarch64)"
+runs:
+  using: "docker"
+  image: "Dockerfile"
+
